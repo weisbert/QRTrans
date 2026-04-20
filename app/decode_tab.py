@@ -4,7 +4,7 @@ import threading
 import time
 from PIL import Image, ImageTk
 
-from core.decoder import preprocess_image, detect_and_decode_qrs, reassemble
+from core.decoder import preprocess_image, detect_and_decode_qrs, reassemble, pyzbar_status
 from core.protocol import MissingPacketError, CRCError, ProtocolError
 
 
@@ -287,9 +287,20 @@ class DecodeTab(tk.Frame):
         self._output.insert("1.0", text)
         self._output.config(state=tk.DISABLED)
 
+    def _pyzbar_hint(self) -> str:
+        ok, err = pyzbar_status()
+        if ok:
+            return ""
+        return (
+            "  ⚠ pyzbar 未能加载，仅使用 OpenCV 回退解码器（对多码识别不稳）。"
+            "Windows 请安装 Visual C++ 2013 Redistributable，"
+            "或运行 pip install --force-reinstall pyzbar。"
+            f"错误：{err}"
+        )
+
     def _on_decode_no_qr(self):
         self._progress["value"] = 0
-        self._decode_status_var.set("未检测到 QR 码，请检查截图质量")
+        self._decode_status_var.set("未检测到 QR 码，请检查截图质量" + self._pyzbar_hint())
         self._status_cb("解码失败：未检测到 QR 码")
         self._retry_btn.config(state=tk.NORMAL, fg="orange")
 
@@ -301,6 +312,7 @@ class DecodeTab(tk.Frame):
             f"检测到 {n} / {total_expected} 个QR码，"
             f"{missing_labels} 个QR码未能识别，"
             f"请补截包含这些码的截图后重试"
+            + self._pyzbar_hint()
         )
         self._decode_status_var.set(msg)
         self._status_cb(f"解码失败：缺失 {len(e.missing)} 个QR码")

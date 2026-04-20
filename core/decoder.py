@@ -23,7 +23,34 @@ def preprocess_image(img: Image.Image, enhance: bool = False) -> np.ndarray:
     return arr
 
 
+# Module-level probe: remember whether pyzbar is actually usable. On Windows
+# the Python package imports fine but libzbar.dll may fail to load, which only
+# surfaces when decode() is first called. Cache the outcome so we can surface
+# a clear diagnostic in the UI instead of silently returning "no QR detected".
+_pyzbar_ok: bool | None = None
+_pyzbar_error: str | None = None
+
+
+def pyzbar_status() -> tuple[bool, str | None]:
+    """Return (usable, error_message). Lazily probes on first call."""
+    global _pyzbar_ok, _pyzbar_error
+    if _pyzbar_ok is not None:
+        return _pyzbar_ok, _pyzbar_error
+    try:
+        from pyzbar import pyzbar  # noqa: F401
+        # Call decode on a tiny image to force libzbar DLL load
+        pyzbar.decode(Image.new("L", (8, 8), 255))
+        _pyzbar_ok = True
+    except Exception as e:
+        _pyzbar_ok = False
+        _pyzbar_error = f"{type(e).__name__}: {e}"
+    return _pyzbar_ok, _pyzbar_error
+
+
 def _pyzbar_decode(arr: np.ndarray) -> list[tuple[bytes, int, int]]:
+    ok, _ = pyzbar_status()
+    if not ok:
+        return []
     try:
         from pyzbar import pyzbar
         pil_img = Image.fromarray(arr)
@@ -32,7 +59,7 @@ def _pyzbar_decode(arr: np.ndarray) -> list[tuple[bytes, int, int]]:
         return []
 
 
-def _opencv_decode(arr: np.ndarray) -> list[tuple[bytes, int, int]]:
+def _opencv_multi_decode(arr: np.ndarray) -> list[tuple[bytes, int, int]]:
     try:
         import cv2
         detector = cv2.QRCodeDetector()
@@ -45,6 +72,37 @@ def _opencv_decode(arr: np.ndarray) -> list[tuple[bytes, int, int]]:
                 x = int(pts[:, 0].min())
                 y = int(pts[:, 1].min())
                 out.append((text.encode("ascii"), x, y))
+        return out
+    except Exception:
+        return []
+
+
+def _opencv_detect_then_crop_decode(arr: np.ndarray) -> list[tuple[bytes, int, int]]:
+    """OpenCV's `detectMulti` locates more QRs than `detectAndDecodeMulti`
+    actually manages to decode. For each located region, crop and retry with
+    the single-code decoder, which is often strong enough to read v40 codes
+    that the multi decoder gives up on.
+    """
+    try:
+        import cv2
+        detector = cv2.QRCodeDetector()
+        ok, pts_multi = detector.detectMulti(arr)
+        if not ok or pts_multi is None:
+            return []
+        out = []
+        h, w = arr.shape[:2]
+        for p in pts_multi:
+            xs, ys = p[:, 0], p[:, 1]
+            x0 = max(0, int(xs.min()) - 10)
+            x1 = min(w, int(xs.max()) + 10)
+            y0 = max(0, int(ys.min()) - 10)
+            y1 = min(h, int(ys.max()) + 10)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            crop = arr[y0:y1, x0:x1]
+            text, _, _ = detector.detectAndDecode(crop)
+            if text:
+                out.append((text.encode("ascii"), x0, y0))
         return out
     except Exception:
         return []
@@ -63,10 +121,10 @@ def _expected_total(seen: dict) -> int | None:
 def detect_and_decode_qrs(img_array: np.ndarray) -> list[dict]:
     """Detect QR codes via multiple passes and merge by content.
 
-    Real-world screenshots (display-scaled, compressed, partially clipped) often
-    defeat a single detector. Run pyzbar and OpenCV on the original, and on a
-    NEAREST 2x upscale if we still look short. A code only needs to survive
-    one pass to make it through. Dedup by QR content so overlaps don't matter.
+    Chains: pyzbar → OpenCV multi → OpenCV detect+crop+single on the original
+    image, then the same cascade on a NEAREST 2x upscale if we still look
+    short of the packet count advertised by a parsed chunk. Each detector
+    only needs to recognise a given code in one pass for us to keep it.
     """
     seen: dict[bytes, tuple[int, int]] = {}
 
@@ -75,18 +133,26 @@ def detect_and_decode_qrs(img_array: np.ndarray) -> list[dict]:
             if data and data not in seen:
                 seen[data] = (x, y)
 
-    add(_pyzbar_decode(img_array))
-    add(_opencv_decode(img_array))
+    def need_more() -> bool:
+        total = _expected_total(seen)
+        return total is None or len(seen) < total
 
-    expected = _expected_total(seen)
-    if expected is None or len(seen) < expected:
+    add(_pyzbar_decode(img_array))
+    if need_more():
+        add(_opencv_multi_decode(img_array))
+    if need_more():
+        add(_opencv_detect_then_crop_decode(img_array))
+
+    if need_more():
         try:
             import cv2
             h, w = img_array.shape[:2]
             up = cv2.resize(img_array, (w * 2, h * 2), interpolation=cv2.INTER_NEAREST)
             add(_pyzbar_decode(up))
-            if _expected_total(seen) is None or len(seen) < (_expected_total(seen) or 0):
-                add(_opencv_decode(up))
+            if need_more():
+                add(_opencv_multi_decode(up))
+            if need_more():
+                add(_opencv_detect_then_crop_decode(up))
         except Exception:
             pass
 
