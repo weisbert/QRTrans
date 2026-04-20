@@ -111,3 +111,40 @@ def recommend_layout(num_packets: int) -> tuple[int, int]:
         if cols * rows >= num_packets:
             return cols, rows
     return 4, 2
+
+
+def make_auto_grid(
+    qr_images: list[Image.Image],
+    screen_w: int,
+    screen_h: int,
+    padding: int = 10,
+    min_qr_px: int = 80,
+    label: bool = True,
+) -> tuple[Image.Image, int, int]:
+    """
+    Build a single grid that fits ALL QR codes on screen, maximising each
+    code's pixel size.  Returns (grid_image, cols, rows).
+
+    The formula inverts make_grid_image's layout:
+        canvas_w = cols*(qr_px + padding) + padding  ≤ screen_w
+        canvas_h = rows*(qr_px + padding + label_h) + padding  ≤ screen_h
+    """
+    n = len(qr_images)
+    if n == 0:
+        raise ValueError("No QR images")
+    label_h = 22 if label else 0
+
+    best_cols, best_rows, best_px = 1, n, 0
+    for cols in range(1, n + 1):
+        rows = math.ceil(n / cols)
+        qr_w = (screen_w - padding * (cols + 1)) // cols
+        qr_h = (screen_h - padding * (rows + 1) - label_h * rows) // rows
+        qr_px = min(qr_w, qr_h)
+        if qr_px > best_px:
+            best_cols, best_rows, best_px = cols, rows, qr_px
+
+    qr_px = max(best_px, min_qr_px)
+    resized = [img.resize((qr_px, qr_px), Image.NEAREST) for img in qr_images]
+    grid = make_grid_image(resized, cols=best_cols, rows=best_rows,
+                           padding=padding, label=label)
+    return grid, best_cols, best_rows

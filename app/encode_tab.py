@@ -5,7 +5,7 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 from datetime import datetime
 from PIL import Image, ImageTk
 
-from core.encoder import encode_text, make_qr_image, paginate, recommend_layout, get_max_payload
+from core.encoder import encode_text, make_qr_image, paginate, get_max_payload
 from core.utils import detect_encoding, gzip_compress
 from app.widgets import QRCanvas
 
@@ -17,6 +17,15 @@ LAYOUTS = {
     "2×2": (2, 2),
     "3×2": (3, 2),
     "4×2": (4, 2),
+    "4×3": (4, 3),
+    "5×3": (5, 3),
+    "6×3": (6, 3),
+    "5×4": (5, 4),
+    "6×4": (6, 4),
+    "8×4": (8, 4),
+    "10×4": (10, 4),
+    "8×5": (8, 5),
+    "10×5": (10, 5),
 }
 EC_LEVELS = [
     "H — 最高纠错 (30%，推荐)",
@@ -121,6 +130,7 @@ class EncodeTab(tk.Frame):
         super().__init__(parent, **kwargs)
         self._status_cb = status_cb or (lambda msg: None)
         self._pages: list[Image.Image] = []
+        self._qr_images: list[Image.Image] = []
         self._current_page = 0
         self._cap_after_id = None
         self._build_ui()
@@ -143,7 +153,7 @@ class EncodeTab(tk.Frame):
         self._cap_bar = _CapacityBar(self)
         self._cap_bar.pack(fill=tk.X, padx=6, pady=(0, 4))
 
-        # Options row
+        # Options row: layout + EC level
         opts = tk.Frame(self)
         opts.pack(fill=tk.X, padx=6, pady=2)
         tk.Label(opts, text="布局:").pack(side=tk.LEFT)
@@ -154,7 +164,7 @@ class EncodeTab(tk.Frame):
         self._layout_cb.pack(side=tk.LEFT, padx=4)
         tk.Label(opts, text="纠错等级:").pack(side=tk.LEFT, padx=(12, 0))
         self._ec_var = tk.StringVar(value=EC_LEVELS[0])
-        ec_cb = ttk.Combobox(opts, textvariable=self._ec_var, values=EC_LEVELS, width=22, state="readonly")
+        ec_cb = ttk.Combobox(opts, textvariable=self._ec_var, values=EC_LEVELS, width=26, state="readonly")
         ec_cb.pack(side=tk.LEFT, padx=4)
         ec_cb.bind("<<ComboboxSelected>>", self._schedule_capacity_update)
 
@@ -163,21 +173,9 @@ class EncodeTab(tk.Frame):
             fill=tk.X, padx=6, pady=4
         )
 
-        # QR display area
-        self._canvas = QRCanvas(self)
-        self._canvas.pack(fill=tk.BOTH, expand=True, padx=6, pady=2)
-
-        # Paging controls
-        page_frame = tk.Frame(self)
-        page_frame.pack(fill=tk.X, padx=6, pady=2)
-        tk.Button(page_frame, text="← 上一页", command=self._prev_page).pack(side=tk.LEFT)
-        self._page_label = tk.Label(page_frame, text="第 - 页 / 共 - 页")
-        self._page_label.pack(side=tk.LEFT, expand=True)
-        tk.Button(page_frame, text="下一页 →", command=self._next_page).pack(side=tk.RIGHT)
-
-        # Bottom buttons row
+        # Bottom controls — pack BEFORE canvas so expand=True never crowds them out
         btn_row = tk.Frame(self)
-        btn_row.pack(fill=tk.X, padx=6, pady=(2, 6))
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(2, 6))
         tk.Button(btn_row, text="🖥 当前屏全屏",
                   command=lambda: self._show_fullscreen(span=False)).pack(
             side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2)
@@ -189,6 +187,17 @@ class EncodeTab(tk.Frame):
         tk.Button(btn_row, text="💾 保存当前页", command=self._save_page).pack(
             side=tk.LEFT, expand=True, fill=tk.X
         )
+
+        page_frame = tk.Frame(self)
+        page_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=2)
+        tk.Button(page_frame, text="← 上一页", command=self._prev_page).pack(side=tk.LEFT)
+        self._page_label = tk.Label(page_frame, text="第 - 页 / 共 - 页")
+        self._page_label.pack(side=tk.LEFT, expand=True)
+        tk.Button(page_frame, text="下一页 →", command=self._next_page).pack(side=tk.RIGHT)
+
+        # QR display area — fills whatever space remains
+        self._canvas = QRCanvas(self)
+        self._canvas.pack(fill=tk.BOTH, expand=True, padx=6, pady=2)
 
     # ── capacity indicator ─────────────────────────────────────────────���────
 
@@ -211,6 +220,13 @@ class EncodeTab(tk.Frame):
             self._cap_bar.refresh(len(text), len(compressed), num_qr, max_payload)
         except Exception:
             pass
+
+    def _recommend_layout(self, num_packets: int) -> str:
+        """Pick the smallest LAYOUTS entry that fits all packets."""
+        for key, (cols, rows) in sorted(LAYOUTS.items(), key=lambda x: x[1][0] * x[1][1]):
+            if cols * rows >= num_packets:
+                return key
+        return list(LAYOUTS.keys())[-1]
 
     # ── file / clear ────────────────────────────────────────────────────────
 
@@ -245,6 +261,7 @@ class EncodeTab(tk.Frame):
         self._cap_bar.refresh(0, 0, 0, 0)
         self._canvas.clear()
         self._pages = []
+        self._qr_images = []
         self._current_page = 0
         self._page_label.config(text="第 - 页 / 共 - 页")
         self._status_cb("已清空")
@@ -265,19 +282,16 @@ class EncodeTab(tk.Frame):
             packets = encode_text(text, ec_level=ec)
             num_pkts = len(packets)
 
-            rec_cols, rec_rows = recommend_layout(num_pkts)
-            rec_key = next(
-                (k for k, v in LAYOUTS.items() if v == (rec_cols, rec_rows)), "4×2"
-            )
-            self._layout_var.set(rec_key)
-
+            self._layout_var.set(self._recommend_layout(num_pkts))
             cols, rows = LAYOUTS[self._layout_var.get()]
             qr_images = [make_qr_image(p, ec_level=ec) for p in packets]
+            self._qr_images = qr_images
             self._pages = paginate(qr_images, cols, rows)
             self._current_page = 0
             self._show_page()
             self._status_cb(
-                f"生成完成：{len(text)} 字符 → 压缩后分 {num_pkts} 个QR码，共 {len(self._pages)} 页"
+                f"生成完成：{len(text)} 字符 → {num_pkts} 个QR码，"
+                f"{cols}×{rows} 布局，共 {len(self._pages)} 页"
             )
         except Exception as e:
             messagebox.showerror("生成失败", str(e))
@@ -304,36 +318,76 @@ class EncodeTab(tk.Frame):
     # ── fullscreen display ──────────────────────────────────────────────────
 
     def _show_fullscreen(self, span: bool = False):
-        if not self._pages:
+        if not self._qr_images:
             messagebox.showwarning("提示", "请先生成 QR 码")
             return
-        img = self._pages[self._current_page]
+
+        if span:
+            info = _get_virtual_screen()
+            sw, sh = (info[2], info[3]) if info else (self.winfo_screenwidth(), self.winfo_screenheight())
+        else:
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+
+        # Respect the user's chosen layout; scale QR images to fill the screen.
+        cols, rows = LAYOUTS[self._layout_var.get()]
+        padding = 10
+        label_h = 22
+        qr_px = max(80, min(
+            (sw - padding * (cols + 1)) // cols,
+            (sh - padding * (rows + 1) - label_h * rows) // rows,
+        ))
+
+        scaled = [img.resize((qr_px, qr_px), Image.NEAREST) for img in self._qr_images]
+        fs_pages = paginate(scaled, cols=cols, rows=rows)
+        n_total = len(self._qr_images)
+        n_pages = len(fs_pages)
+
         win = tk.Toplevel(self)
-        win.title(f"QR 全屏预览 — 第 {self._current_page + 1} 页  [Esc / 点击 关闭]")
         win.configure(bg="black")
         win.bind("<Escape>", lambda e: win.destroy())
-
         if span:
             self._apply_span(win)
         else:
             self._apply_maximize(win)
 
-        def _draw():
-            sw, sh = win.winfo_width(), win.winfo_height()
-            if sw < 100 or sh < 100:
-                win.after(50, _draw)
-                return
-            ratio = min(sw / img.width, sh / img.height)
-            new_w = max(1, int(img.width * ratio))
-            new_h = max(1, int(img.height * ratio))
-            resized = img.resize((new_w, new_h), Image.NEAREST)
-            photo = ImageTk.PhotoImage(resized)
-            lbl = tk.Label(win, image=photo, bg="black", cursor="hand2")
-            lbl.image = photo
-            lbl.pack(expand=True)
-            lbl.bind("<Button-1>", lambda e: win.destroy())
+        lbl = tk.Label(win, bg="black", cursor="hand2")
+        lbl.pack(expand=True)
+        page_idx = [0]
 
-        win.after(150, _draw)
+        def show_page(idx):
+            page_idx[0] = idx % n_pages
+            img = fs_pages[page_idx[0]]
+            ww, wh = win.winfo_width(), win.winfo_height()
+            if ww < 100 or wh < 100:
+                win.after(50, lambda: show_page(idx))
+                return
+            ratio = min(ww / img.width, wh / img.height, 1.0)
+            disp = img if ratio >= 0.99 else img.resize(
+                (max(1, int(img.width * ratio)), max(1, int(img.height * ratio))),
+                Image.NEAREST,
+            )
+            photo = ImageTk.PhotoImage(disp)
+            lbl.config(image=photo)
+            lbl.image = photo
+            pg = page_idx[0] + 1
+            nav = "  ←→/点击翻页  " if n_pages > 1 else "  点击"
+            win.title(
+                f"QR 全屏 — 第 {pg}/{n_pages} 页  {n_total}个码  {cols}×{rows}/页"
+                f"  [Esc 关闭{nav}]"
+            )
+
+        def on_key(e):
+            if e.keysym in ("Right", "space", "Next"):
+                show_page(page_idx[0] + 1)
+            elif e.keysym in ("Left", "Prior"):
+                show_page(page_idx[0] - 1)
+
+        win.bind("<Key>", on_key)
+        lbl.bind("<Button-1>", lambda e: (
+            win.destroy() if n_pages == 1 else show_page(page_idx[0] + 1)
+        ))
+
+        win.after(150, lambda: show_page(0))
 
     def _apply_maximize(self, win: tk.Toplevel):
         """Maximize on the same monitor as the main window."""
