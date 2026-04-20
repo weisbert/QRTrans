@@ -141,9 +141,10 @@ class GridPicker(tk.Toplevel):
         self._on_select = on_select
         self._hover_col = 0
         self._hover_row = 0
+        self._root = anchor.winfo_toplevel()
 
         self.overrideredirect(True)
-        self.transient(anchor.winfo_toplevel())
+        self.transient(self._root)
 
         cw = self.MAX_COLS * (self.CELL + self.GAP) - self.GAP
         ch = self.MAX_ROWS * (self.CELL + self.GAP) - self.GAP
@@ -159,8 +160,7 @@ class GridPicker(tk.Toplevel):
 
         self._canvas.bind("<Motion>", self._on_motion)
         self._canvas.bind("<Button-1>", self._on_click)
-        self.bind("<Escape>", lambda e: self.destroy())
-        self.bind("<FocusOut>", lambda e: self.destroy())
+        self.bind("<Escape>", lambda e: self._close())
 
         self.update_idletasks()
         x = anchor.winfo_rootx()
@@ -171,8 +171,27 @@ class GridPicker(tk.Toplevel):
         y = min(y, self.winfo_screenheight() - ph - 4)
         self.geometry(f"+{x}+{y}")
 
-        self.grab_set()
-        self.focus_set()
+        # Use a root-level click binding to detect outside clicks.
+        # grab_set() + overrideredirect causes a deadlock on Windows.
+        self._outside_id = self._root.bind("<ButtonPress>", self._on_outside_click, add="+")
+
+    def _close(self):
+        try:
+            self._root.unbind("<ButtonPress>", self._outside_id)
+        except Exception:
+            pass
+        self.destroy()
+
+    def _on_outside_click(self, event):
+        """Dismiss the picker when the user clicks outside it."""
+        wx = self.winfo_rootx()
+        wy = self.winfo_rooty()
+        ww = self.winfo_width()
+        wh = self.winfo_height()
+        rx = event.x_root
+        ry = event.y_root
+        if not (wx <= rx <= wx + ww and wy <= ry <= wy + wh):
+            self._close()
 
     def _cell_rect(self, c, r):
         x0 = (c - 1) * (self.CELL + self.GAP)
@@ -198,7 +217,7 @@ class GridPicker(tk.Toplevel):
     def _on_click(self, event):
         if self._hover_col > 0 and self._hover_row > 0:
             self._on_select(self._hover_col, self._hover_row)
-        self.destroy()
+        self._close()
 
 
 class EncodeTab(tk.Frame):
