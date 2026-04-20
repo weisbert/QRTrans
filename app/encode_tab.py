@@ -215,8 +215,9 @@ class GridPicker(tk.Toplevel):
             self._label.config(text=f"{col} × {row}")
 
     def _on_click(self, event):
-        if self._hover_col > 0 and self._hover_row > 0:
-            self._on_select(self._hover_col, self._hover_row)
+        col = max(1, min(self.MAX_COLS, event.x // (self.CELL + self.GAP) + 1))
+        row = max(1, min(self.MAX_ROWS, event.y // (self.CELL + self.GAP) + 1))
+        self._on_select(col, row)
         self._close()
 
 
