@@ -125,6 +125,82 @@ class _CapacityBar(tk.Frame):
         self._canvas.create_rectangle(0, 0, W - 1, H - 1, outline="#BBBBBB", fill="")
 
 
+class GridPicker(tk.Toplevel):
+    """Excel-style grid popup for selecting layout (cols × rows)."""
+
+    MAX_COLS = 10
+    MAX_ROWS = 8
+    CELL = 24
+    GAP = 1
+    _C_INACTIVE = "#D8D8D8"
+    _C_ACTIVE = "#4472C4"
+    _C_BORDER = "#999999"
+
+    def __init__(self, anchor: tk.Widget, on_select):
+        super().__init__(anchor.winfo_toplevel())
+        self._on_select = on_select
+        self._hover_col = 0
+        self._hover_row = 0
+
+        self.overrideredirect(True)
+        self.transient(anchor.winfo_toplevel())
+
+        cw = self.MAX_COLS * (self.CELL + self.GAP) - self.GAP
+        ch = self.MAX_ROWS * (self.CELL + self.GAP) - self.GAP
+        frame = tk.Frame(self, bd=1, relief=tk.SOLID, bg="#CCCCCC")
+        frame.pack(padx=1, pady=1)
+        self._canvas = tk.Canvas(frame, width=cw, height=ch,
+                                 highlightthickness=0, bg="#FFFFFF", cursor="hand2")
+        self._canvas.pack(padx=4, pady=(4, 2))
+        self._label = tk.Label(frame, text="", font=("", 9), bg="#FFFFFF")
+        self._label.pack(pady=(0, 4))
+
+        self._draw(0, 0)
+
+        self._canvas.bind("<Motion>", self._on_motion)
+        self._canvas.bind("<Button-1>", self._on_click)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<FocusOut>", lambda e: self.destroy())
+
+        self.update_idletasks()
+        x = anchor.winfo_rootx()
+        y = anchor.winfo_rooty() + anchor.winfo_height() + 2
+        pw = self.winfo_reqwidth()
+        ph = self.winfo_reqheight()
+        x = min(x, self.winfo_screenwidth() - pw - 4)
+        y = min(y, self.winfo_screenheight() - ph - 4)
+        self.geometry(f"+{x}+{y}")
+
+        self.grab_set()
+        self.focus_set()
+
+    def _cell_rect(self, c, r):
+        x0 = (c - 1) * (self.CELL + self.GAP)
+        y0 = (r - 1) * (self.CELL + self.GAP)
+        return x0, y0, x0 + self.CELL, y0 + self.CELL
+
+    def _draw(self, hc: int, hr: int):
+        self._canvas.delete("all")
+        for r in range(1, self.MAX_ROWS + 1):
+            for c in range(1, self.MAX_COLS + 1):
+                x0, y0, x1, y1 = self._cell_rect(c, r)
+                fill = self._C_ACTIVE if (c <= hc and r <= hr) else self._C_INACTIVE
+                self._canvas.create_rectangle(x0, y0, x1, y1, fill=fill, outline=self._C_BORDER)
+
+    def _on_motion(self, event):
+        col = max(1, min(self.MAX_COLS, event.x // (self.CELL + self.GAP) + 1))
+        row = max(1, min(self.MAX_ROWS, event.y // (self.CELL + self.GAP) + 1))
+        if col != self._hover_col or row != self._hover_row:
+            self._hover_col, self._hover_row = col, row
+            self._draw(col, row)
+            self._label.config(text=f"{col} × {row}")
+
+    def _on_click(self, event):
+        if self._hover_col > 0 and self._hover_row > 0:
+            self._on_select(self._hover_col, self._hover_row)
+        self.destroy()
+
+
 class EncodeTab(tk.Frame):
     def __init__(self, parent, status_cb=None, **kwargs):
         super().__init__(parent, **kwargs)
@@ -162,6 +238,8 @@ class EncodeTab(tk.Frame):
             opts, textvariable=self._layout_var, values=list(LAYOUTS.keys()), width=6, state="readonly"
         )
         self._layout_cb.pack(side=tk.LEFT, padx=4)
+        self._layout_btn = tk.Button(opts, text="⊞", width=2, command=self._open_grid_picker)
+        self._layout_btn.pack(side=tk.LEFT, padx=(0, 4))
         tk.Label(opts, text="纠错等级:").pack(side=tk.LEFT, padx=(12, 0))
         self._ec_var = tk.StringVar(value=EC_LEVELS[0])
         ec_cb = ttk.Combobox(opts, textvariable=self._ec_var, values=EC_LEVELS, width=26, state="readonly")
@@ -226,7 +304,16 @@ class EncodeTab(tk.Frame):
         for key, (cols, rows) in sorted(LAYOUTS.items(), key=lambda x: x[1][0] * x[1][1]):
             if cols * rows >= num_packets:
                 return key
-        return list(LAYOUTS.keys())[-1]
+        return max(LAYOUTS, key=lambda k: LAYOUTS[k][0] * LAYOUTS[k][1])
+
+    def _open_grid_picker(self):
+        def on_select(cols, rows):
+            key = f"{cols}×{rows}"
+            if key not in LAYOUTS:
+                LAYOUTS[key] = (cols, rows)
+            self._layout_var.set(key)
+            self._layout_cb.config(values=list(LAYOUTS.keys()))
+        GridPicker(self._layout_btn, on_select)
 
     # ── file / clear ────────────────────────────────────────────────────────
 
