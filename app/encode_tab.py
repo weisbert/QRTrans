@@ -445,7 +445,10 @@ class EncodeTab(tk.Frame):
         ))
 
         scaled = [img.resize((qr_px, qr_px), Image.NEAREST) for img in self._qr_images]
-        fs_pages = paginate(scaled, cols=cols, rows=rows)
+        # padding must match the value used when computing qr_px above, or the
+        # grid will overflow the screen and show_page's NEAREST downscale
+        # corrupts QR modules enough to defeat pyzbar.
+        fs_pages = paginate(scaled, cols=cols, rows=rows, padding=padding)
         n_total = len(self._qr_images)
         n_pages = len(fs_pages)
 

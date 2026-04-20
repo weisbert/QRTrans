@@ -95,12 +95,13 @@ def make_grid_image(
     return canvas
 
 
-def paginate(qr_images: list[Image.Image], cols: int, rows: int) -> list[Image.Image]:
+def paginate(qr_images: list[Image.Image], cols: int, rows: int,
+             padding: int = 20) -> list[Image.Image]:
     per_page = cols * rows
     pages = []
     for start in range(0, len(qr_images), per_page):
         chunk = qr_images[start:start + per_page]
-        pages.append(make_grid_image(chunk, cols, rows))
+        pages.append(make_grid_image(chunk, cols, rows, padding=padding))
     return pages
 
 
