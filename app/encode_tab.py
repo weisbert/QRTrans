@@ -506,10 +506,11 @@ class EncodeTab(tk.Frame):
         if sys.platform == "win32":
             win.state("zoomed")
         else:
-            try:
-                win.attributes("-zoomed", True)
-            except tk.TclError:
-                win.attributes("-fullscreen", True)
+            # On X11/Wayland "-zoomed" is unreliable: many WMs accept it
+            # silently and either ignore it or apply vertical-only maximize
+            # (window collapses to a thin vertical strip). "-fullscreen" is
+            # honored consistently and lands on the monitor under the window.
+            win.attributes("-fullscreen", True)
 
     def _apply_span(self, win: tk.Toplevel):
         """Cover the entire virtual desktop (all monitors combined)."""
