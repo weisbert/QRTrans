@@ -31,11 +31,21 @@ class App(tk.Tk):
         self._notebook.add(self._decode_tab, text="📥 解码 Decode")
 
     def _route_ctrl_v(self, event):
-        focused = self.focus_get()
-        # If a text/entry widget has focus, let the default paste happen
-        if focused and focused.winfo_class() in ("Text", "Entry", "TEntry"):
+        on_decode = self._notebook.index(self._notebook.select()) == 1
+        if not on_decode:
             return
-        # Only paste image when decode tab is selected
-        if self._notebook.index(self._notebook.select()) == 1:
-            self._decode_tab._paste_image()
-            return "break"
+        # On the decode tab, only defer to default paste when focus is on an
+        # editable text widget that actually lives inside the decode tab.
+        # Otherwise focus may be stuck on the encode tab's hidden text box, or
+        # on the decode tab's disabled output box — both swallow Ctrl+V silently.
+        focused = self.focus_get()
+        if focused and focused.winfo_class() in ("Text", "Entry", "TEntry"):
+            inside_decode = str(focused).startswith(str(self._decode_tab))
+            try:
+                editable = str(focused.cget("state")) == "normal"
+            except tk.TclError:
+                editable = True
+            if inside_decode and editable:
+                return
+        self._decode_tab._paste_image()
+        return "break"
