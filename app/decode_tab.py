@@ -6,6 +6,7 @@ from PIL import Image, ImageTk
 
 from core.decoder import preprocess_image, detect_and_decode_qrs, reassemble, pyzbar_status
 from core.protocol import MissingPacketError, CRCError, ProtocolError
+from core.utils import mark_nuls
 
 
 class DecodeTab(tk.Frame):
@@ -16,6 +17,9 @@ class DecodeTab(tk.Frame):
         self._preview_photos: list = []
         self._preview_index: int = 0
         self._decode_start_time: float = 0.0
+        # Decoded text kept verbatim; the output box only holds a NUL-marked copy
+        # (Tk Text drops everything after a NUL).
+        self._decoded_text: str | None = None
         self._build_ui()
 
     def _build_ui(self):
@@ -219,6 +223,7 @@ class DecodeTab(tk.Frame):
         self._status_cb("已清空")
 
     def _clear_output(self):
+        self._decoded_text = None
         self._output.config(state=tk.NORMAL)
         self._output.delete("1.0", tk.END)
         self._output.config(state=tk.DISABLED)
@@ -279,12 +284,16 @@ class DecodeTab(tk.Frame):
             f"共 {img_count} 张截图，{n} 个QR码全部解码成功"
             f" — {len(text):,} 字符，耗时 {elapsed:.1f}s"
         )
+        display, nuls, runs = mark_nuls(text)
+        self._decoded_text = text
+        if nuls:
+            msg += f"  ⚠ 含 {nuls} 个 NUL（{runs} 段），显示/复制时替换为 ␀，保存文件保留原文"
         self._decode_status_var.set(msg)
         self._status_cb(f"解码完成：{len(text):,} 字符")
         self._retry_btn.config(state=tk.DISABLED, fg="gray")
         self._output.config(state=tk.NORMAL)
         self._output.delete("1.0", tk.END)
-        self._output.insert("1.0", text)
+        self._output.insert("1.0", display)
         self._output.config(state=tk.DISABLED)
 
     def _pyzbar_hint(self) -> str:
@@ -336,7 +345,8 @@ class DecodeTab(tk.Frame):
         self._decode(enhance=True)
 
     def _copy_all(self):
-        text = self._output.get("1.0", tk.END)
+        # Clipboard text is NUL-terminated on Windows, so copy the marked form.
+        text = mark_nuls(self._decoded_text)[0] if self._decoded_text is not None else ""
         if text.strip():
             self.clipboard_clear()
             self.clipboard_append(text)
@@ -345,7 +355,7 @@ class DecodeTab(tk.Frame):
             messagebox.showinfo("提示", "没有可复制的内容")
 
     def _save_file(self):
-        text = self._output.get("1.0", tk.END)
+        text = self._decoded_text or ""
         if not text.strip():
             messagebox.showinfo("提示", "没有可保存的内容")
             return

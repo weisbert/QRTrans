@@ -6,7 +6,7 @@ from datetime import datetime
 from PIL import Image, ImageTk
 
 from core.encoder import encode_text, make_qr_image, paginate, get_max_payload
-from core.utils import detect_encoding, gzip_compress
+from core.utils import detect_encoding, gzip_compress, mark_nuls
 from app.widgets import QRCanvas
 
 
@@ -229,6 +229,10 @@ class EncodeTab(tk.Frame):
         self._qr_images: list[Image.Image] = []
         self._current_page = 0
         self._cap_after_id = None
+        # Loaded file text kept verbatim: the Text widget can't hold NULs, so it
+        # only shows a marked copy. Used while the widget still matches it.
+        self._loaded_text: str | None = None
+        self._loaded_display: str | None = None
         self._build_ui()
 
     def _build_ui(self):
@@ -243,7 +247,7 @@ class EncodeTab(tk.Frame):
         self.text_input = scrolledtext.ScrolledText(self, height=8, wrap=tk.WORD)
         self.text_input.pack(fill=tk.BOTH, expand=False, padx=6, pady=2)
         self.text_input.bind("<KeyRelease>", self._schedule_capacity_update)
-        self.text_input.bind("<<Paste>>", self._schedule_capacity_update)
+        self.text_input.bind("<<Paste>>", self._on_paste)
 
         # Capacity indicator
         self._cap_bar = _CapacityBar(self)
@@ -304,9 +308,34 @@ class EncodeTab(tk.Frame):
             self.after_cancel(self._cap_after_id)
         self._cap_after_id = self.after(400, self._update_capacity)
 
+    def _source_text(self) -> str:
+        text = self.text_input.get("1.0", tk.END).rstrip("\n")
+        if self._loaded_text is not None and text == self._loaded_display.rstrip("\n"):
+            return self._loaded_text
+        return text
+
+    def _on_paste(self, event=None):
+        # Default paste goes straight into the Text widget, which truncates at
+        # the first NUL. Mark them first so the rest of the clipboard survives.
+        try:
+            clip = self.clipboard_get()
+        except tk.TclError:
+            return None
+        marked, nuls, runs = mark_nuls(clip)
+        try:
+            self.text_input.delete(tk.SEL_FIRST, tk.SEL_LAST)
+        except tk.TclError:
+            pass
+        self.text_input.insert(tk.INSERT, marked)
+        self.text_input.see(tk.INSERT)
+        if nuls:
+            self._status_cb(f"粘贴内容含 {nuls} 个 NUL 字符（{runs} 段），已替换为 ␀ 标记")
+        self._schedule_capacity_update()
+        return "break"
+
     def _update_capacity(self):
         self._cap_after_id = None
-        text = self.text_input.get("1.0", tk.END).rstrip("\n")
+        text = self._source_text()
         if not text.strip():
             self._cap_bar.refresh(0, 0, 0, 0)
             return
@@ -358,12 +387,16 @@ class EncodeTab(tk.Frame):
             else:
                 messagebox.showerror("编码错误", "无法自动检测文件编码，请手动转换为 UTF-8")
                 return
+        display, nuls, runs = mark_nuls(text)
+        self._loaded_text, self._loaded_display = text, display
         self.text_input.delete("1.0", tk.END)
-        self.text_input.insert("1.0", text)
+        self.text_input.insert("1.0", display)
         self._schedule_capacity_update()
-        self._status_cb(f"已加载文件: {path}（编码: {enc}，{len(text)} 字符）")
+        note = f"，含 {nuls} 个 NUL（{runs} 段，框内显示为 ␀，编码用原文）" if nuls else ""
+        self._status_cb(f"已加载文件: {path}（编码: {enc}，{len(text)} 字符{note}）")
 
     def _clear(self):
+        self._loaded_text = self._loaded_display = None
         self.text_input.delete("1.0", tk.END)
         self._cap_bar.refresh(0, 0, 0, 0)
         self._canvas.clear()
@@ -376,7 +409,7 @@ class EncodeTab(tk.Frame):
     # ── generate / display ──────────────────────────────────────────────────
 
     def _generate(self):
-        text = self.text_input.get("1.0", tk.END).rstrip("\n")
+        text = self._source_text()
         if not text.strip():
             messagebox.showwarning("提示", "请先输入数据")
             return
