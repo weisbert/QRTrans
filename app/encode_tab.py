@@ -8,6 +8,7 @@ from PIL import Image, ImageTk
 from core.encoder import encode_text, make_qr_image, paginate, get_max_payload
 from core.utils import detect_encoding, gzip_compress, mark_nuls
 from app.widgets import QRCanvas
+from app import x11clip
 
 
 LAYOUTS = {
@@ -317,10 +318,18 @@ class EncodeTab(tk.Frame):
     def _on_paste(self, event=None):
         # Default paste goes straight into the Text widget, which truncates at
         # the first NUL. Mark them first so the rest of the clipboard survives.
-        try:
-            clip = self.clipboard_get()
-        except tk.TclError:
-            return None
+        # On X11, Tk's clipboard get already stops at the NUL, so read the raw
+        # selection through libX11 — unless we own it ourselves (Tk can't serve
+        # it while we block here).
+        clip = None
+        if self.tk.call("tk", "windowingsystem") == "x11" and not self.tk.call(
+                "selection", "own", "-selection", "CLIPBOARD"):
+            clip = x11clip.read_clipboard()
+        if clip is None:
+            try:
+                clip = self.clipboard_get()
+            except tk.TclError:
+                return None
         marked, nuls, runs = mark_nuls(clip)
         try:
             self.text_input.delete(tk.SEL_FIRST, tk.SEL_LAST)
